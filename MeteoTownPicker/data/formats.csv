@@ -1,0 +1,3 @@
+name;format;description
+CH1903+;[E [m], N[m], h [m]];'Swiss coordinate system (LV95)'
+WGS84;[lat ["], long ["], h [m]];'World Geodetic System 1984 (WGS84)'
