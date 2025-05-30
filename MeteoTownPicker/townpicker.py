@@ -14,14 +14,19 @@ from .transformer import CoordinateTransformer as OptimusPrime
 class TownPicker:
     def __init__(self):
         self.TOWNS = pd.read_csv(files('MeteoTownPicker.data') / 'towns.csv', sep=';')
+        self.filtered_towns = self.TOWNS.copy()
+        # filter out all towns which appear as duplicates due to different postal codes
+        self.filtered_towns = self.filtered_towns.drop_duplicates(subset=['Ortschaftsname', 'PLZ'], keep='first')
+        # now drop towns which appear as duplicates in the gemeinden
+        self.filtered_towns = self.filtered_towns.drop_duplicates(subset=['Ortschaftsname','Gemeindename'], keep='first')
         # add cartesian coordinates to the towns dataframe
         t = OptimusPrime()
-        coords_ch = self.TOWNS[['E', 'N']].to_numpy()
+        coords_ch = self.filtered_towns[['E', 'N']].to_numpy()
         coords_wgs84 = t.transform(coords_ch, 'CH1903+', 'WGS84')
         #now add the coordinates to the dataframe
 
-        self.TOWNS['lat'] = coords_wgs84[:, 0]
-        self.TOWNS['lon'] = coords_wgs84[:, 1]
+        self.filtered_towns['lat'] = coords_wgs84[:, 0]
+        self.filtered_towns['lon'] = coords_wgs84[:, 1]
 
 
         return
@@ -33,16 +38,15 @@ class TownPicker:
         :return: DataFrame with town information or a specific town's information.
         """
         if town is None:
-            result = pd.DataFrame(self.TOWNS.iloc[random.randint(0, len(self.TOWNS) - 1)])
+            result = pd.DataFrame(self.filtered_towns.iloc[random.randint(0, len(self.filtered_towns) - 1)])
         else:
-            result = self.TOWNS[self.TOWNS['Ortschaftsname'].str.contains(f'{town}', case=False, na=False)]
+            result = self.filtered_towns[self.filtered_towns['Ortschaftsname'].str.contains(f'{town}', case=False, na=False)]
             if result.empty:
                 raise ValueError(f"Town '{town}' not found.")
 
         # print the result in a readable format
         max_oname_length = result['Ortschaftsname'].astype(str).map(len).max()
         max_plz_length = result['PLZ'].astype(str).map(len).max()
-        max_kanton_length = result['Kantonskürzel'].astype(str).map(len).max()
 
         print('Your town information:')
         out = 'Name' + ' ' * (max_oname_length +1 ) + 'PLZ' + ' ' * (max_plz_length + 2) + 'Kanton'
@@ -57,30 +61,37 @@ class TownPicker:
             print(out)
         return
 
-    def _generate_clusters(self, N):
+    def _generate_clusters(self, N, df):
         # generate N clusters of towns based on their spatial distribution using the MiniBatchKMeans algorithm
-        if N > len(self.TOWNS):
-            raise ValueError(f"N must be less than or equal to {len(self.TOWNS)}")
-        coords = self.TOWNS[['lat', 'lon']].to_numpy()
+        if N > len(df):
+            # each town is it's own cluster
+            df['cluster'] = range(len(df))
+            return df
+        coords = df[['lat', 'lon']].to_numpy()
         kmeans = MiniBatchKMeans(n_clusters=N, n_init='auto')
         kmeans.fit(coords)
         labels = kmeans.labels_
-        self.TOWNS['cluster'] = labels
-        return
+        df['cluster'] = labels
+        return df
 
 
-    def meteo_view(self, N=10):
+    def meteo_view(self, N=10, regex=None):
         """
         Visualize the N towns chjosen from regions in the dataframe.
         :param N: Number of random towns to visualize (default is 7).
+        :param regex: Optional regex to filter towns by name after clustering.
         """
-        if N > len(self.TOWNS):
-            raise ValueError(f"N must be less than or equal to {len(self.TOWNS)}")
-
-        # generate the indices based on N groups of spacially equal regions
-        self._generate_clusters(N)
-        # now randomly select one town from each cluster
-        towns = self.TOWNS.groupby('cluster').apply(lambda x: x.sample(1)).reset_index(drop=True)
+        if N > len(self.filtered_towns):
+            towns = self.filtered_towns.copy()
+            towns['cluster'] = range(len(towns))
+        else:
+            # first apply regex filter to ortschaftsname if provided
+            if regex is not None:
+                towns = self.filtered_towns[self.filtered_towns['Ortschaftsname'].str.contains(regex, regex=True, na=False)].copy()
+            # generate the indices based on N groups of spacially equal regions
+            towns = self._generate_clusters(N, towns)
+            # now randomly select one town from each cluster
+            towns = towns.groupby('cluster').apply(lambda x: x.sample(1)).reset_index(drop=True)
         fig = px.scatter_mapbox(
             towns,
             lat='lat',
@@ -97,16 +108,16 @@ class TownPicker:
         fig.show(config=config)
         return
 
-    def full_view(self):
+    def full_view(self, regex=None):
         """
         Visualize all the town information in a plotly scatter mapbox.
         """
-        if 'cluster' in self.TOWNS.columns:
-            c = 'cluster'
-        else:
-            c = 'PLZ'
+        towns = self.filtered_towns.copy()
+        if regex is not None:
+            towns = towns[towns['Ortschaftsname'].str.contains(regex, regex=True, na=False)] if regex else towns
+
         fig = px.scatter_mapbox(
-            self.TOWNS,
+            towns,
             lat='lat',
             lon='lon',
             hover_name='Ortschaftsname',
@@ -114,7 +125,7 @@ class TownPicker:
             zoom=6,
             height=600,
             mapbox_style='carto-positron',
-            color=c,
+            color='PLZ',
             title='Swiss Towns'
         )
         config = {'scrollZoom': True, 'displayModeBar': True}
